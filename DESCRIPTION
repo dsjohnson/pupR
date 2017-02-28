@@ -1,0 +1,13 @@
+Package: pupR
+Type: Package
+Title: Model-Based Estimation of Northern Fur Seal Pup Production
+Version: 0.0.1
+Date: 2017-02-27
+Author: Devin S. Johnson
+Maintainer: Devin S. Johnson <devin.johnson@noaa.gov>
+Description: Provide a set of models for estimation of northern fur seal pup production
+Imports:
+    dplyr
+License: CC0
+LazyLoad: yes
+ByteCompile: TRUE
