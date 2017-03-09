@@ -2,7 +2,7 @@
 #' 
 #' @description Mark-resight models for estimation of northern fur seal pup abundance.
 #' 
-#' #' \tabular{ll}{ 
+#' \tabular{ll}{ 
 #' Package: \tab pupR\cr 
 #' Type: \tab Package\cr 
 #' Version: \tab 0.0.1\cr 
@@ -25,7 +25,12 @@
 #' @author Devin S. Johnson
 #' 
 #' Maintainer: Devin S. Johnson <devin.johnson@@noaa.gov>
+#' @importFrom stats dbinom plogis qlogis optim sd
+#' @importFrom utils read.csv
 #' 
+NULL
+
+
 .onAttach <- function(library, pkgname)
 {
   info <-utils::packageDescription(pkgname)

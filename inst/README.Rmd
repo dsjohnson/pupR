@@ -1,0 +1,300 @@
+---
+title: "Use of the 'pupR' package for model-based estimation of northern fur seal pup production"
+author: Devin S. Johnson
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(cowplot)
+library(coda)
+```
+
+This guide provides a step-by-step code demonstration to use the `pupR` package as `tidyverse` group of packages for estimating northern fur seal pup abundance. First, load all the necessary packages:
+
+## Raw data structure
+
+We begin with data import and rearragement for optimal model fitting. The 2016 NFS pup data can be accessed by the user by typeing the following code to see where the example data is stored:
+```{r}
+library(pupR)
+show_data_loc()
+```
+The data used for this process must look like the 2 data sets in the included directory. The example data may be read into the current `R` environemtnt using the following command:
+```{R}
+load_demo_data()
+head(shear_2016_snp)
+head(shear_2016_sng)
+head(resight_2016_snp)
+head(resight_2016_sng)
+```
+Note that this is exactly how it is read in from the .csv files. To createw these files, I just cut the appropriate sections out of the `SNPdata2016.xlsx` and `SNGdata2016.xlsx` files. The worksheets contailing this data are the pups sheared and resampling sheets. The sheet heading, etc. seem to be different from year-to-year and between island, so, it is up the user to get the .csv files necessary into the same forms. Note, **column headings are important** and must be exactly the same for the following code to work. However, it is  note necessary for the model fitting if you can change the data munging code appropriately. Also, note that the 'X' in the shearing data columns was auomatically put there by `R`, the raw data just has the section numbers as column names.   
+
+## Data munging
+
+### Combining and normalizing
+
+Now we use the new data packages in `R` to rearrange the data to use the `pupR` code to fit the models. We first have to turn the shearing data vertical rather than horizontal.
+```{R}
+library(tidyverse)
+
+# St. Paul shearing data
+shear_2016_snp %>% gather(section, M, -rookery) %>% 
+  filter(!is.na(M)) %>% 
+  mutate(section = sapply(strsplit(section, "X", fixed=T), function(x)x[2])) %>% 
+  mutate(island = "snp") %>% arrange(rookery, section) -> shear_2016_snp
+
+# St. George shearing data
+shear_2016_sng %>% gather(section, M, -rookery) %>% 
+  filter(!is.na(M)) %>% 
+  mutate(section = sapply(strsplit(section, "X", fixed=T), function(x)x[2])) %>% 
+  mutate(island = "sng") %>% arrange(rookery, section) -> shear_2016_sng
+
+rbind(shear_2016_sng, shear_2016_snp) -> shear_2016
+
+head(shear_2016)
+```
+
+Now, we'll have to sum the resight counts within each section. For the basic occasion-observer model we will then sum over all resight counts within the rookery for each observer and occasion.
+```{R}
+
+# St. Paul resight data
+resight_2016_snp %>% group_by(rookery, section, resample, obs) %>% 
+  summarise(., m=sum(count), u=as.integer(n()*25 - m)) %>% ungroup() %>% 
+  mutate(island="snp") %>% 
+  as.data.frame() -> resight_2016_snp
+
+# St. George resight data
+resight_2016_sng %>% group_by(rookery, section, resample, obs) %>% 
+  summarise(., m=sum(count), u=as.integer(n()*25 - m)) %>% ungroup() %>% 
+  mutate(island="sng") %>% 
+  as.data.frame() -> resight_2016_sng
+
+rbind(resight_2016_sng, resight_2016_snp) -> resight_2016
+
+head(resight_2016)
+```
+
+### Quality control
+
+Now we will do a little quality control by checking that all the rookery and sections designations are the same in both the resight and shearing data.frames
+
+```{r}
+shear_sec = transmute(shear_2016, rook_sec=paste(island, rookery, section))[[1]]
+resight_sec =  transmute(resight_2016, rook_sec=paste(island, rookery, section))[[1]]
+
+# Check for same section
+all(resight_sec %in% shear_sec)
+all(shear_sec %in% resight_sec)
+```
+
+Therefore we have some mismatches in section and rookery classification. Let find out which ones. These are the sections that are in the resight data, but are missing from the shearing data:
+```{r}
+unique(resight_sec[!(resight_sec%in%shear_sec)]) 
+```
+
+Looks like the number of shear marks for SGZ section 2 were combined with section 1, but, resights were still based on all 3 sections. So, because there does not seem to be good recorded separation between sections 1 and 2 at SGZ, 6 and 7 at REE, and 10 and 11 at REE, we will combine those into a single section in both data.frames. 
+
+```{R}
+resight_2016 %>% 
+  mutate(section_orig=as.character(section), section=ifelse(island=='sng' & rookery=='SGZ' & section_orig%in%c('1','2'), '1/2', section_orig)) %>% 
+  mutate(section=ifelse(island=='snp' & rookery=='REE' &section_orig%in%c('6','7','67'), '6/7', section)) %>% 
+  mutate(section=ifelse(island=='snp' & rookery=='REE' & section_orig%in%c('10','11','1011'), '10/11', section)) -> resight_2016
+
+shear_2016 %>% 
+ mutate(section_orig=as.character(section), section=ifelse(island=='sng' & rookery=='SGZ' & section_orig%in%c('1','2'), '1/2', section_orig)) %>% 
+  mutate(section=ifelse(island=='snp' & rookery=='REE' &section_orig%in%c('6','7','67'), '6/7', section)) %>% 
+  mutate(section=ifelse(island=='snp' & rookery=='REE' & section_orig%in%c('10','11','1011'), '10/11', section)) -> shear_2016
+```
+
+In the `shear_2016` data we have some sections where shear marks were put out, but no resights were recorded.
+
+```{R}
+unique(shear_sec[!(shear_sec%in%resight_sec)]) 
+```
+
+Looks like the resighters only recorded `section=1` for resampling at STA. Therefore, all of STA will be combined into 1 section, `1/2`.
+
+```{R}
+resight_2016 %>% 
+  mutate(section=ifelse(island=='sng' & rookery=='STA' & section_orig%in%c('1','2'), '1/2', section)) -> resight_2016
+
+shear_2016 %>% 
+ mutate(section=ifelse(island=='sng' & rookery=='STA' & section_orig%in%c('1','2'), '1/2', section)) -> shear_2016
+```
+
+Now we can check again to make sure all the sections line up
+
+```{r}
+shear_sec = transmute(shear_2016, rook_sec=paste(island, rookery, section))[[1]]
+resight_sec =  transmute(resight_2016, rook_sec=paste(island, rookery, section))[[1]]
+
+# Check for same section
+all(resight_sec %in% shear_sec)
+all(shear_sec %in% resight_sec)
+```
+
+Alright, everything checks out with sections. Now let's make sure there is consistancy with respect to observers. 
+
+```{R}
+unique(resight_2016$obs)
+```
+
+Looks good. I know all those people. Now, let's go back and make sure all the counts are summed over the new combined sections we've defined.
+```{R}
+resight_2016 %>% group_by(island, rookery, section, resample, obs) %>% 
+  summarise(m=sum(m), u=sum(u)) %>% ungroup() %>% 
+  mutate(island=factor(island), rookery=factor(rookery), section=factor(section), resample=factor(resample)) %>% 
+  as.data.frame() %>% droplevels() -> resight_2016
+
+shear_2016 %>% group_by(island, rookery, section) %>% 
+  summarise(M=sum(M)) %>% ungroup() %>% as.data.frame() %>% droplevels() -> shear_2016
+```
+The full resulting data is given in the last section 'Data appendix.'
+
+## Model fitting with 'pupR'
+
+Now we can use the data we just constructed to fit a mark-resight model where detection probablities vary be occasion and observer. 
+
+## First steps: An observer by occasion model
+
+In this model we seek to account for occasion and observer variablility in the pup detection process. The model is described as follows. Each rookery will be treated separatey, so the description presented here is for a single rookery. The estimates of island total pup production will based on the sum of the rookery estimates.
+
+### Model description
+
+First, some notation. The following are the observed data
+
+* $M$ = The total number of shear marked pups
+* $m_{ij}$ = number of marked pups counted by observer $i$ on occasion $j$
+* $u_{ij}$ = number of unmarked pups counted by observer $i$ on occation $j$
+
+Now, the parameters of the model are
+
+* $U$ = The total number of unmarked pups in the population
+* $N$ = total pup abundance ($N=M+U$)
+* $\delta_{ij}$ = probablility that a pup (marked or unmarked) is counted by observer $i$ on occasion $j$
+* $\tau$ = probability that a pup is shear marked 
+
+This model can then be written as the product binomial likelihood
+$$
+[U, \boldsymbol{\delta}, \tau|M, \mathbf{m}, \mathbf{u}] \propto [M|U, \tau]\times \prod_{i,j}\left\{[m_{ij}|M, \delta_{ij}]\times [u_{ij}|U, \delta_{ij}]\right\},
+$$
+where
+
+* $[M|U, \tau] = Binomial(M|M+U, \tau)$
+* $[m_{ij}|M, \delta_{ij}] = Binomial(m_{ij}|M, \delta_{ij})$
+* $[u_{ij}|U, \delta_{ij}] = Binomial(u_{ij}|U, \delta_{ij})$.
+
+To make the optimization of the likelihood easier, I reparameterized the model as follows:
+
+ * $\beta_{ij} = \mbox{logit}(\delta_{ij})$
+ * $\alpha = \mbox{logit}(\tau)$
+ * $\theta = \log(U)$ where $\theta$ is continuous.
+ 
+ Inference was obtained via MLE using the Hessian matrix of the likelihood for calculation of the appropriate $SE$s. To estimate pup production I used
+ $$
+ \hat N = \hat U + M,
+ $$
+ thus, $SE(\hat N) = SE(\hat U)$.
+ 
+ 
+### A little more data manipulation
+
+Because I am looking at variation in detection at just the observer by occasion level a little more data manipulation is in order to sum the total number of sheared pups to the rookery level. 
+
+```{R}
+shear_2016 %>% mutate(island=factor(island)) %>% group_by(island, rookery) %>% summarise(M = sum(M)) %>% ungroup() -> shear_2016_oo
+resight_2016 %>% group_by(island, rookery, resample, obs) %>% summarize(m=sum(m), u=sum(u)) %>% ungroup() -> resight_2016_oo
+shear_2016_oo
+resight_2016_oo
+```
+
+Wasn't that easy using `dplyr`! I'll group the two data sets, `shear_2016_oo` and `resight_2016` into a single data set where rows are based on island and rookery. That way I can apply the model fitting to each roookery at once using the functions in the `purrr` package.
+
+```{R}
+resight_2016_oo %>% group_by(island, rookery) %>% nest() %>% 
+left_join(shear_2016_oo) -> resight_2016_oo
+resight_2016_oo
+```
+Notice that there is a row for every (island, rookery) combination. The resample counts are in the `data` column in which each entry is itself a data set. We can examine these resight data sets just like selecting an entry in a data frame, e.g., for East Reef rookery the resight data is
+```{R}
+filter(resight_2016_oo, rookery=="ERE") %>% select(data) %>% .[[1]]
+```
+Note that you have to use the double brackets because the data is actually contained in a single element list. To access the object in the first list element, you need to have the double brackets. we can look at the object that we get with out the double brackets
+```{R}
+filter(resight_2016_oo, rookery=="ERE") %>% select(data) -> x
+str(x)
+```
+
+### Fitting the model
+
+The function that fits this particular model is `fit_oo` and we will fit the model to each rookery with the mapping functions of the `purrr` package. First, you need to create a function that will be applied to each row of the `resight_2016_oo` data set. 
+```{R}
+resight_2016_oo %>% mutate(., fit = pmap(.,fit_oo)) -> resight_2016_oo
+resight_2016_oo
+```
+Now there is a fitted model associated with each row of the resight data, e.g., in the first row 
+```{R}
+resight_2016_oo[1,5][[1]]
+```
+
+The `get_IS_sample` function can now be use to a sample from the posterior distribution of the real parameters for each rookery.
+
+```{R}
+resight_2016_oo %>% mutate(SIR=pmap(., get_IS_sample)) -> resight_2016_oo
+```
+See, the last column has the sample included. Now lets summarize the posterior sample into some useful estimates.
+```{R}
+resight_2016_oo %>% mutate(summary=pmap(., summarize_oo)) -> resight_2016_oo
+select(resight_2016_oo, island, rookery, summary) %>% unnest() %>% as.data.frame() -> results_tbl
+```
+Here are the Bayes estimates of pup production by rookery and compare the results to the traditional way to estimate production.
+```{r}
+pupbull = read.csv("/Users/devin.johnson/research/projects/methodology_devel/model_based_pup_production/work/PUPBULL_2016.csv")
+filter(results_tbl, parameter=="N") %>% left_join(pupbull, by=c("rookery" = "RCOD")) %>% 
+  mutate(estimate=ifelse(!is.na(DEADPUPS), estimate+DEADPUPS, estimate)) %>% 
+  mutate(CI.lower=ifelse(!is.na(DEADPUPS), CI.lower+DEADPUPS, CI.lower)) %>% 
+  mutate(CI.upper=ifelse(!is.na(DEADPUPS), CI.upper+DEADPUPS, CI.upper)) %>% 
+  select(-YEAR, -ROOKERY, -contains("BULLS")) -> N_tbl
+N_tbl
+
+ggplot(data=N_tbl) + geom_point(aes(x=PUPSBORN, y=estimate)) + coord_equal() + geom_abline(intercept = 0, slope = 1) + xlab("Previous method") + ylab("Model-based estimate") + ggtitle("Comparison of point estimates")
+
+ggplot(data=N_tbl) + geom_point(aes(x=SEP, y=se)) + coord_equal() + geom_abline(intercept = 0, slope = 1) + xlab("Previous method") + ylab("Model-based estimate") + ggtitle("Comparison of SE estimates")
+
+```
+
+Here are the estimates of $\delta$:
+```{r}
+filter(results_tbl, !parameter%in%c("N","tau"))
+```
+And, finally, $\tau$ the probability that a pup was sheared in each rookery
+```{r}
+filter(results_tbl, parameter=="tau")
+```
+
+Now we can obtain estimates of island-wide production by summing the rookery SIRs. 
+```{r}
+resight_2016_oo %>% mutate(N_smp = map2(.$SIR, .$M, function(SIR, M) exp(SIR[,1])+M)) -> resight_2016_oo
+resight_2016_oo %>% filter(island=="sng") %>% select(N_smp) %>% .[[1]] %>% Reduce("+",.) -> sng_prod
+resight_2016_oo %>% filter(island=="snp") %>% select(N_smp) %>% .[[1]] %>% Reduce("+",.) -> snp_prod
+
+### St. George
+round(mean(sng_prod))
+round(sd(sng_prod))
+round(HPDinterval(mcmc(sng_prod)))
+
+
+### St. Paul
+round(mean(snp_prod))
+round(sd(snp_prod))
+round(HPDinterval(mcmc(snp_prod)))
+
+```
+
+## Data appendix
+```{R, echo=FALSE}
+cat("resight_2016")
+print(resight_2016)
+cat("shear_2016")
+print(shear_2016)
+```
