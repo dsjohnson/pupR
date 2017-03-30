@@ -1,6 +1,6 @@
 ---
 title: "Use of the 'pupR' package for model-based estimation of northern fur seal pup production"
-author: Devin S. Johnson
+author: Devin Johnson, Rod Towell, and Jason Baker
 output: html_document
 ---
 

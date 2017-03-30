@@ -51,3 +51,12 @@ see_demo = function(){
   system(paste0("open ", dir, "/README.html"))
 }
 
+
+# erf function
+# erf = function(x) 2 * pnorm(x * sqrt(2)) - 1
+
+# @title logistic normal mode
+# qlogis(x) = sigma^2(2*x-1) + mu
+# 
+
+
